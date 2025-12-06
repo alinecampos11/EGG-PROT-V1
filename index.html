@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Conexión de Señales – Persona A y B</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Chart.js desde CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 1rem;
+      background: #0f172a;
+      color: #e5e7eb;
+    }
+
+    h1, h2 {
+      text-align: center;
+      margin-bottom: 0.5rem;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (min-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    .card {
+      background: #020617;
+      border-radius: 1rem;
+      padding: 1rem;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+      border: 1px solid #1e293b;
+    }
+
+    .full-width {
+      grid-column: 1 / -1;
+    }
+
+    .status {
+      margin-bottom: 0.75rem;
+      font-size: 0.9rem;
+    }
+
+    .status span {
+      font-weight: 600;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      border: 1px solid #22c55e;
+      color: #22c55e;
+      margin-left: 0.25rem;
+    }
+
+    .badge.offline {
+      border-color: #ef4444;
+      color: #ef4444;
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 1.5rem;
+      font-size: 0.8rem;
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Señales Persona A & Persona B</h1>
+    <p style="text-align:center; margin-bottom:1.5rem; font-size:0.9rem;">
+      Visualización en tiempo (casi) real desde dos ESP32 y señal combinada
+    </p>
+
+    <div class="status">
+      Estado conexión backend:
+      <span id="ws-status">Desconectado</span>
+      <span id="ws-badge" class="badge offline">OFFLINE</span>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Persona A</h2>
+        <p style="font-size:0.85rem; color:#9ca3af;">
+          Prototipo AD8232 (ECG) → ESP32 A
+        </p>
+        <canvas id="chartA" height="200"></canvas>
+      </div>
+
+      <div class="card">
+        <h2>Persona B</h2>
+        <p style="font-size:0.85rem; color:#9ca3af;">
+          TGAM / EEG frontal Fp1–A1 → ESP32 B
+        </p>
+        <canvas id="chartB" height="200"></canvas>
+      </div>
+
+      <div class="card full-width">
+        <h2>Señal combinada / Métrica (ej. PLV)</h2>
+        <p style="font-size:0.85rem; color:#9ca3af;">
+          Aquí luego mostraremos el resultado de la evaluación conjunta (por ahora un ejemplo simple).
+        </p>
+        <canvas id="chartCombined" height="200"></canvas>
+      </div>
+    </div>
+
+    <footer>
+      Prototipo paralelo – ESP32 + señales biológicas •
+      <span id="debug"></span>
+    </footer>
+  </div>
+
+  <script>
+    // ---------- CONFIG GENERAL ----------
+    const MAX_POINTS = 300; // cuántos puntos guardamos en pantalla
+
+    // URL del WebSocket de tu backend en Render
+    const WS_URL = "wss://egg-prot-v1.onrender.com/ws";
+
+    // ---------- CREAR GRÁFICAS ----------
+    function createTimeChart(ctx, label) {
+      return new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [{
+            label,
+            data: [],
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.15
+          }]
+        },
+        options: {
+          animation: false,
+          responsive: true,
+          scales: {
+            x: {
+              ticks: { display: false }
+            },
+            y: {
+              beginAtZero: false
+            }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    }
+
+    const chartA = createTimeChart(
+      document.getElementById("chartA").getContext("2d"),
+      "Señal A"
+    );
+    const chartB = createTimeChart(
+      document.getElementById("chartB").getContext("2d"),
+      "Señal B"
+    );
+    const chartCombined = createTimeChart(
+      document.getElementById("chartCombined").getContext("2d"),
+      "Métrica combinada"
+    );
+
+    // ---------- UTILIDAD PARA AGREGAR PUNTO ----------
+    function addPoint(chart, value) {
+      const labels = chart.data.labels;
+      const data = chart.data.datasets[0].data;
+
+      labels.push("");
+      data.push(value);
+
+      if (labels.length > MAX_POINTS) {
+        labels.shift();
+        data.shift();
+      }
+
+      chart.update();
+    }
+
+    // ---------- CONEXIÓN WEBSOCKET ----------
+    const wsStatus = document.getElementById("ws-status");
+    const wsBadge = document.getElementById("ws-badge");
+    const debug = document.getElementById("debug");
+
+    let socket;
+
+    function setWsState(online) {
+      if (online) {
+        wsStatus.textContent = "Conectado";
+        wsBadge.textContent = "ONLINE";
+        wsBadge.classList.remove("offline");
+      } else {
+        wsStatus.textContent = "Desconectado";
+        wsBadge.textContent = "OFFLINE";
+        wsBadge.classList.add("offline");
+      }
+    }
+
+    function connectWebSocket() {
+      socket = new WebSocket(WS_URL);
+
+      socket.onopen = () => {
+        setWsState(true);
+        debug.textContent = "Esperando datos…";
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          // Esperamos algo tipo:
+          // { device: "A", t: 123456.78, value: 512 }
+          // { device: "B", t: 123456.79, value: 498 }
+
+          if (msg.device === "A") {
+            addPoint(chartA, msg.value);
+          } else if (msg.device === "B") {
+            addPoint(chartB, msg.value);
+          }
+
+          // EJEMPLO SIMPLE de "métrica combinada"
+          const lastA = chartA.data.datasets[0].data.slice(-1)[0];
+          const lastB = chartB.data.datasets[0].data.slice(-1)[0];
+          if (lastA !== undefined && lastB !== undefined) {
+            const metric = Math.abs(lastA - lastB);
+            addPoint(chartCombined, metric);
+          }
+
+        } catch (err) {
+          console.error("Error parseando mensaje:", err);
+        }
+      };
+
+      socket.onclose = () => {
+        setWsState(false);
+        debug.textContent = "Reconectando en 3s…";
+        setTimeout(connectWebSocket, 3000);
+      };
+
+      socket.onerror = () => {
+        setWsState(false);
+      };
+    }
+
+    connectWebSocket();
+  </script>
+</body>
+</html>

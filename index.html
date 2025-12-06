@@ -87,7 +87,7 @@
   <div class="container">
     <h1>Señales Persona A & Persona B</h1>
     <p style="text-align:center; margin-bottom:1.5rem; font-size:0.9rem;">
-      Visualización en tiempo (casi) real desde dos ESP32 y señal combinada
+      Visualización en tiempo (casi) real desde dos ESP32 y métrica de sincronía (PLV)
     </p>
 
     <div class="status">
@@ -114,9 +114,9 @@
       </div>
 
       <div class="card full-width">
-        <h2>Señal combinada / Métrica (ej. PLV)</h2>
+        <h2>PLV (sincronía entre A y B)</h2>
         <p style="font-size:0.85rem; color:#9ca3af;">
-          Aquí luego mostraremos el resultado de la evaluación conjunta (por ahora un ejemplo simple).
+          PLV calculado con Wavelet (Morlet) en banda alfa (~10 Hz). Valores entre 0 y 1.
         </p>
         <canvas id="chartCombined" height="200"></canvas>
       </div>
@@ -167,6 +167,38 @@
       });
     }
 
+    function createPlvChart(ctx, label) {
+      return new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [{
+            label,
+            data: [],
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.15
+          }]
+        },
+        options: {
+          animation: false,
+          responsive: true,
+          scales: {
+            x: {
+              ticks: { display: false }
+            },
+            y: {
+              min: 0,
+              max: 1
+            }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    }
+
     const chartA = createTimeChart(
       document.getElementById("chartA").getContext("2d"),
       "Señal A"
@@ -175,9 +207,9 @@
       document.getElementById("chartB").getContext("2d"),
       "Señal B"
     );
-    const chartCombined = createTimeChart(
+    const chartCombined = createPlvChart(
       document.getElementById("chartCombined").getContext("2d"),
-      "Métrica combinada"
+      "PLV α"
     );
 
     // ---------- UTILIDAD PARA AGREGAR PUNTO ----------
@@ -227,8 +259,12 @@
         try {
           const msg = JSON.parse(event.data);
           // Esperamos algo tipo:
-          // { device: "A", t: 123456.78, value: 512 }
-          // { device: "B", t: 123456.79, value: 498 }
+          // {
+          //   device: "A" | "B",
+          //   value: 512,
+          //   t: 123456.78,
+          //   metrics: { plv_alpha: 0.7 }  // opcional
+          // }
 
           if (msg.device === "A") {
             addPoint(chartA, msg.value);
@@ -236,12 +272,10 @@
             addPoint(chartB, msg.value);
           }
 
-          // EJEMPLO SIMPLE de "métrica combinada"
-          const lastA = chartA.data.datasets[0].data.slice(-1)[0];
-          const lastB = chartB.data.datasets[0].data.slice(-1)[0];
-          if (lastA !== undefined && lastB !== undefined) {
-            const metric = Math.abs(lastA - lastB);
-            addPoint(chartCombined, metric);
+          // Si viene PLV desde el backend, lo graficamos
+          if (msg.metrics && typeof msg.metrics.plv_alpha === "number") {
+            addPoint(chartCombined, msg.metrics.plv_alpha);
+            debug.textContent = "PLV α: " + msg.metrics.plv_alpha.toFixed(3);
           }
 
         } catch (err) {
